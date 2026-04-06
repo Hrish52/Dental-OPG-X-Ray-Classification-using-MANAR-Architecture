@@ -207,17 +207,91 @@ A utility function allows random image inference from the validation set, displa
 
 ## Results
 
-### MANAR v1 (MobileNetV2)
+### MANAR v1 — Initial Training (MobileNetV2, Frozen)
 
-- Strong performance on well-represented classes (Healthy Teeth, Caries)
-- Weaker recall on minority classes (Fractured Teeth, Infection) due to data imbalance
-- Class weighting and fine-tuning improved generalization across categories
+Training for 20 epochs (with EarlyStopping) on the original 517-image dataset yielded a **31% overall accuracy**. The model heavily biased toward the majority class:
 
-### MANAR v2 (EfficientNetB0 + Expanded Data)
+| Category | Precision | Recall | F1-Score | Support |
+|---|---|---|---|---|
+| BDC-BDR | 1.00 | 0.10 | 0.18 | 10 |
+| Caries | 0.13 | 0.12 | 0.13 | 24 |
+| Fractured Teeth | 0.00 | 0.00 | 0.00 | 3 |
+| Healthy Teeth | 0.36 | 0.60 | 0.45 | 45 |
+| Impacted Teeth | 0.20 | 0.06 | 0.09 | 17 |
+| Infection | 0.00 | 0.00 | 0.00 | 5 |
+| **Weighted Avg** | **0.31** | **0.31** | **0.26** | **104** |
 
-- Improved feature extraction through compound scaling
-- Larger training pool from object detection crop extraction
-- Evaluated via confusion matrix and per-class metrics
+### MANAR v1 — After Fine-Tuning & Class Weighting
+
+After unfreezing MobileNetV2 and retraining with balanced class weights at a learning rate of `1e-5` for two additional 10-epoch sessions, accuracy **dropped slightly to 28%**:
+
+| Category | Precision | Recall | F1-Score | Support |
+|---|---|---|---|---|
+| BDC-BDR | 0.33 | 0.10 | 0.15 | 10 |
+| Caries | 0.16 | 0.21 | 0.18 | 24 |
+| Fractured Teeth | 0.00 | 0.00 | 0.00 | 3 |
+| Healthy Teeth | 0.34 | 0.49 | 0.40 | 45 |
+| Impacted Teeth | 0.17 | 0.06 | 0.09 | 17 |
+| Infection | 0.00 | 0.00 | 0.00 | 5 |
+| **Weighted Avg** | **0.25** | **0.28** | **0.25** | **104** |
+
+### MANAR v2 (EfficientNetB0 + Expanded Dataset)
+
+The v2 pipeline expanded the dataset from 517 to **18,949 images** using object detection crops and switched to EfficientNetB0. However, training accuracy plateaued at approximately **22–23%** across all 10 epochs, with validation accuracy stagnating at ~23%. The learning rate was reduced from `1e-3` to `2e-4` by `ReduceLROnPlateau` but had no meaningful effect.
+
+---
+
+## ⚠️ Known Accuracy Issues & Root Cause Analysis
+
+The model currently underperforms across all iterations. Below is a transparent analysis of the identified issues and proposed solutions.
+
+### 1. Severe Data Scarcity (v1)
+
+The original classification dataset contains only **517 images** across 6 classes, with an extreme imbalance:
+
+| Category | Samples | Share |
+|---|---|---|
+| Healthy Teeth | 223 | 43.1% |
+| Caries | 119 | 23.0% |
+| Impacted Teeth | 87 | 16.8% |
+| BDC-BDR | 52 | 10.1% |
+| Infection | 23 | 4.4% |
+| Fractured Teeth | 13 | 2.5% |
+
+With only 13 Fractured Teeth and 23 Infection samples, the model cannot learn meaningful representations for these classes. The validation split further reduces these to just 3 and 5 samples respectively — far too few for reliable evaluation.
+
+### 2. Crop Quality Issues (v2)
+
+The v2 dataset expansion from 517 → 18,949 via bounding-box cropping introduced potential problems. The `id_to_category` mapping may not accurately correspond to the object detection labels, meaning crops could be systematically mislabeled. The v2 model's inability to exceed ~23% accuracy (near random for 6 classes ≈ 16.7%) suggests the expanded data may contain significant label noise.
+
+### 3. Frozen Backbone Limitations
+
+Both v1 and v2 began training with the backbone entirely frozen, leaving only the attention block and classifier head trainable. For a highly specialized domain like dental radiography — which looks very different from ImageNet natural images — the frozen features may be insufficiently adapted. Fine-tuning in v1 was applied too late and with too aggressive a class-weight penalty, causing validation loss to increase.
+
+### 4. Insufficient Augmentation
+
+The augmentation pipeline applies only rotation (±15°) and horizontal flips. Dental X-rays would benefit from more aggressive augmentation: elastic deformations, contrast adjustments (CLAHE), random cropping, and mixup/cutmix strategies to simulate the variability seen in clinical imaging.
+
+### 5. Attention-Only Architecture
+
+The current "brain-inspired attention" block implements channel attention only (no spatial attention component despite the description). A full CBAM (Convolutional Block Attention Module) with both channel and spatial branches, or a self-attention / transformer-based approach, may better localize pathology regions.
+
+### 6. No Learning Rate Warm-Up
+
+Training jumps directly into Adam at `1e-3` with a frozen backbone, then switches to `1e-5` for fine-tuning. A cosine annealing schedule or warm-up phase could stabilize early training and prevent the loss plateaus observed in the training logs.
+
+### Recommended Fixes
+
+| Issue | Recommended Action |
+|---|---|
+| Data scarcity | Collect more labeled data; apply SMOTE, GANs, or heavy augmentation for minority classes |
+| Label noise in crops | Manually audit a sample of extracted crops to verify `id_to_category` mapping accuracy |
+| Frozen backbone | Progressively unfreeze backbone layers from early training; use discriminative learning rates |
+| Weak augmentation | Add CLAHE, elastic transforms, random erasing, mixup/cutmix |
+| Attention module | Implement full CBAM (channel + spatial) or integrate lightweight vision transformers |
+| LR scheduling | Use cosine annealing with warm-up; experiment with OneCycleLR |
+| Evaluation | Use k-fold cross-validation instead of a single 80/20 split given the small dataset |
+| Architecture | Consider a lighter head with fewer dense layers or add batch normalization before the classifier |
 
 ---
 
